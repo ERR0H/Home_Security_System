@@ -258,8 +258,8 @@ class MonitorTab(ctk.CTkFrame):
         self.is_monitoring = True
         self.stop_monitor_event.clear()
         
-        # Tải cache face_recognizer
-        self.face_recognizer.load_cache()
+        # Tải lại dữ liệu khuôn mặt nếu cần
+        self.face_recognizer.load_known_faces()
         
         # Bắt đầu luồng monitoring
         self.monitor_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
@@ -280,27 +280,19 @@ class MonitorTab(ctk.CTkFrame):
         try:
             while not self.stop_monitor_event.is_set() and self.is_monitoring:
                 # Lấy frame từ camera
-                frame_data = self.camera_manager.get_latest_frame(self.selected_camera_id)
-                
-                if frame_data is None:
+                frame = self.camera_manager.get_frame(self.selected_camera_id)
+                if frame is None:
                     time.sleep(0.01)
                     continue
-                
-                frame, _ = frame_data
-                
                 # Nhận diện khuôn mặt
-                detections = self.face_recognizer.recognize_faces_in_frame(frame)
-                
+                detections = self.face_recognizer.recognize(frame)
                 # Vẽ kết quả lên frame
                 annotated_frame = self._draw_detections(frame, detections)
-                
                 # Hiển thị
                 self._display_frame(annotated_frame)
-                
                 # Ghi lại sự kiện cảnh báo
                 for detection in detections:
                     self._process_detection(detection)
-                
                 time.sleep(0.01)
         
         except Exception as e:
@@ -313,38 +305,24 @@ class MonitorTab(ctk.CTkFrame):
     def _draw_detections(self, frame: np.ndarray, detections: list) -> np.ndarray:
         """
         Vẽ khung mặt và nhãn lên frame.
-        
-        Màu sắc:
-        - Người quen: Xanh lá (0, 255, 0)
-        - Người lạ: Vàng (0, 255, 255)
-        - Người tình nghi: Đỏ (0, 0, 255)
         """
         annotated = frame.copy()
-        
         for detection in detections:
             top, right, bottom, left = detection['location']
-            label, color = self.face_recognizer.get_detection_label_and_color(detection)
-            
-            # Vẽ khung hình chữ nhật
-            thickness = 2
-            cv2.rectangle(annotated, (left, top), (right, bottom), color, thickness)
-            
-            # Vẽ nhãn
+            name = detection['name']
+            # Màu sắc: người quen xanh lá, lạ vàng
+            color = (0, 255, 0) if name != "Unknown" else (0, 255, 255)
+            label = name if name else "Unknown"
+            cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
             font_thickness = 2
-            
             (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, font_thickness)
-            
-            # Vẽ hình chữ nhật nền cho text
             text_bg_coords = (left, top - 30)
             text_end_coords = (left + text_width + 10, top)
             cv2.rectangle(annotated, text_bg_coords, text_end_coords, color, -1)
-            
-            # Vẽ text
             text_coords = (left + 5, top - 10)
             cv2.putText(annotated, label, text_coords, font, font_scale, (255, 255, 255), font_thickness)
-        
         return annotated
     
     def _display_frame(self, frame: np.ndarray):
