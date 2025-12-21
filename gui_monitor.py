@@ -1,0 +1,469 @@
+"""
+Tab 1: Giám Sát (Monitor Center)
+Hiển thị video trực tiếp từ camera, vẽ khung mặt, hiển thị cảnh báo
+"""
+
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import cv2
+import numpy as np
+import threading
+import time
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+class MonitorTab(ctk.CTkFrame):
+    """
+    Tab giám sát trực tiếp.
+    
+    Giao diện:
+    - Bên trái: Danh sách camera với nút chọn
+    - Giữa: Hiển thị video chính
+    - Bên phải: Thông tin, cảnh báo
+    """
+    
+    def __init__(self, parent, db_manager, face_recognizer, camera_manager):
+        """
+        Khởi tạo Monitor Tab.
+        
+        Args:
+            parent: Widget cha (Tab widget)
+            db_manager: DatabaseManager
+            face_recognizer: FaceRecognizer
+            camera_manager: CameraManager
+        """
+        super().__init__(parent)
+        
+        self.db_manager = db_manager
+        self.face_recognizer = face_recognizer
+        self.camera_manager = camera_manager
+        
+        # Trạng thái
+        self.selected_camera_id = None
+        self.is_monitoring = False
+        self.monitor_thread = None
+        self.stop_monitor_event = threading.Event()
+        
+        # Cache ảnh để hiển thị
+        self.current_frame = None
+        self.display_image = None
+        
+        self._setup_ui()
+        self._load_camera_list()
+        
+        # Pack frame để fill parent
+        self.pack(fill="both", expand=True)
+        
+        logger.info("MonitorTab initialized")
+    
+    def _setup_ui(self):
+        """Thiết lập giao diện"""
+        # Layout: 3 cột
+        # Cột trái: 200px, cột giữa: flexible, cột phải: 250px
+        
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+        # ==================== CỘT TRÁI: CAMERA LIST ====================
+        left_frame = ctk.CTkFrame(self, fg_color=("gray90", "gray20"), corner_radius=10)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        left_frame.grid_rowconfigure(2, weight=1)
+        
+        # Tiêu đề
+        title_label = ctk.CTkLabel(
+            left_frame,
+            text="📷 Danh Sách Camera",
+            font=("Arial", 12, "bold")
+        )
+        title_label.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        # Nút tải lại danh sách
+        refresh_btn = ctk.CTkButton(
+            left_frame,
+            text="🔄 Tải Lại",
+            command=self._load_camera_list,
+            height=30,
+            font=("Arial", 10)
+        )
+        refresh_btn.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        
+        # Danh sách camera
+        self.camera_list_frame = ctk.CTkScrollableFrame(left_frame)
+        self.camera_list_frame.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+        self.camera_list_frame.grid_columnconfigure(0, weight=1)
+        
+        # ==================== CỘT GIỮA: VIDEO DISPLAY ====================
+        center_frame = ctk.CTkFrame(self, fg_color=("gray85", "gray25"), corner_radius=10)
+        center_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        center_frame.grid_rowconfigure(1, weight=1)
+        center_frame.grid_columnconfigure(0, weight=1)
+        
+        # Tiêu đề
+        camera_title = ctk.CTkLabel(
+            center_frame,
+            text="Chọn camera để bắt đầu giám sát",
+            font=("Arial", 12, "bold"),
+            text_color="gray"
+        )
+        camera_title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        self.camera_title_label = camera_title
+        
+        # Hình ảnh video
+        self.video_label = ctk.CTkLabel(
+            center_frame,
+            text="",
+            fg_color=("gray80", "gray30"),
+            corner_radius=5
+        )
+        self.video_label.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        
+        # Thống kê FPS
+        info_frame = ctk.CTkFrame(center_frame, fg_color="transparent")
+        info_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        info_frame.grid_columnconfigure(1, weight=1)
+        
+        self.info_label = ctk.CTkLabel(
+            info_frame,
+            text="FPS: 0 | Frame: 0",
+            font=("Arial", 10),
+            text_color="gray"
+        )
+        self.info_label.grid(row=0, column=0, sticky="w")
+        
+        # ==================== CỘT PHẢI: THÔNG TIN & CẢNH BÁO ====================
+        right_frame = ctk.CTkFrame(self, fg_color=("gray90", "gray20"), corner_radius=10)
+        right_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
+        right_frame.grid_rowconfigure(2, weight=1)
+        
+        # Tiêu đề
+        alert_title = ctk.CTkLabel(
+            right_frame,
+            text="⚠️ Cảnh Báo & Thông Tin",
+            font=("Arial", 12, "bold")
+        )
+        alert_title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        # Nút điều khiển
+        control_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        control_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        control_frame.grid_columnconfigure((0, 1), weight=1)
+        
+        self.start_btn = ctk.CTkButton(
+            control_frame,
+            text="▶️ Bắt Đầu",
+            command=self._start_monitoring,
+            height=35,
+            font=("Arial", 10),
+            fg_color=("green", "#1f6723")
+        )
+        self.start_btn.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
+        
+        self.stop_btn = ctk.CTkButton(
+            control_frame,
+            text="⏹️ Dừng",
+            command=self._stop_monitoring,
+            height=35,
+            font=("Arial", 10),
+            fg_color=("red", "#8B0000"),
+            state="disabled"
+        )
+        self.stop_btn.grid(row=0, column=1, padx=2, pady=2, sticky="ew")
+        
+        # Vùng cảnh báo
+        alert_text_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        alert_text_frame.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+        alert_text_frame.grid_rowconfigure(0, weight=1)
+        alert_text_frame.grid_columnconfigure(0, weight=1)
+        
+        self.alert_text = ctk.CTkTextbox(
+            alert_text_frame,
+            height=300,
+            width=250,
+            state="disabled",
+            text_color="white",
+            fg_color=("gray75", "gray15")
+        )
+        self.alert_text.grid(row=0, column=0, sticky="nsew")
+        
+        # Nút xóa cảnh báo
+        clear_btn = ctk.CTkButton(
+            right_frame,
+            text="🗑️ Xóa Cảnh Báo",
+            command=self._clear_alerts,
+            height=30,
+            font=("Arial", 10)
+        )
+        clear_btn.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+    
+    def _load_camera_list(self):
+        """Tải và hiển thị danh sách camera"""
+        # Xóa widget cũ
+        for widget in self.camera_list_frame.winfo_children():
+            widget.destroy()
+        
+        cameras = self.db_manager.get_all_cameras()
+        
+        if not cameras:
+            no_camera_label = ctk.CTkLabel(
+                self.camera_list_frame,
+                text="Chưa có camera",
+                text_color="gray"
+            )
+            no_camera_label.pack(padx=10, pady=10)
+            return
+        
+        for camera in cameras:
+            camera_id = camera['id']
+            name = camera['name']
+            status = camera['status']
+            
+            # Nút camera
+            btn_text = f"{name}\n({status})"
+            btn = ctk.CTkButton(
+                self.camera_list_frame,
+                text=btn_text,
+                command=lambda cid=camera_id, cname=name: self._select_camera(cid, cname),
+                height=50,
+                font=("Arial", 10),
+                fg_color=("gray70", "gray40"),
+                hover_color=("gray60", "gray50")
+            )
+            btn.pack(fill="x", padx=5, pady=5)
+    
+    def _select_camera(self, camera_id: int, camera_name: str):
+        """Chọn camera để giám sát"""
+        # Dừng monitoring hiện tại
+        if self.is_monitoring:
+            self._stop_monitoring()
+        
+        self.selected_camera_id = camera_id
+        self.camera_title_label.configure(text=f"📹 {camera_name}")
+        self._add_alert(f"Đã chọn camera: {camera_name}")
+        
+        logger.info(f"Selected camera {camera_id}: {camera_name}")
+    
+    def _start_monitoring(self):
+        """Bắt đầu giám sát camera được chọn"""
+        if not self.selected_camera_id:
+            self._add_alert("❌ Vui lòng chọn camera trước khi bắt đầu!")
+            return
+        
+        if self.is_monitoring:
+            self._add_alert("⚠️ Đang giám sát. Hãy dừng trước khi chọn camera khác!")
+            return
+        
+        self.is_monitoring = True
+        self.stop_monitor_event.clear()
+        
+        # Tải cache face_recognizer
+        self.face_recognizer.load_cache()
+        
+        # Bắt đầu luồng monitoring
+        self.monitor_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
+        self.monitor_thread.start()
+        
+        # Cập nhật UI
+        self.start_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        
+        self._add_alert(f"✅ Bắt đầu giám sát camera {self.selected_camera_id}...")
+        logger.info(f"Started monitoring camera {self.selected_camera_id}")
+    
+    def _monitoring_loop(self):
+        """
+        Luồng giám sát: Lặp vô hạn, lấy frame, nhận diện, hiển thị
+        Chạy trong thread riêng để không block GUI
+        """
+        try:
+            while not self.stop_monitor_event.is_set() and self.is_monitoring:
+                # Lấy frame từ camera
+                frame_data = self.camera_manager.get_latest_frame(self.selected_camera_id)
+                
+                if frame_data is None:
+                    time.sleep(0.01)
+                    continue
+                
+                frame, _ = frame_data
+                
+                # Nhận diện khuôn mặt
+                detections = self.face_recognizer.recognize_faces_in_frame(frame)
+                
+                # Vẽ kết quả lên frame
+                annotated_frame = self._draw_detections(frame, detections)
+                
+                # Hiển thị
+                self._display_frame(annotated_frame)
+                
+                # Ghi lại sự kiện cảnh báo
+                for detection in detections:
+                    self._process_detection(detection)
+                
+                time.sleep(0.01)
+        
+        except Exception as e:
+            logger.error(f"Error in monitoring loop: {e}")
+            self._add_alert(f"❌ Lỗi: {str(e)}")
+        
+        finally:
+            self.is_monitoring = False
+    
+    def _draw_detections(self, frame: np.ndarray, detections: list) -> np.ndarray:
+        """
+        Vẽ khung mặt và nhãn lên frame.
+        
+        Màu sắc:
+        - Người quen: Xanh lá (0, 255, 0)
+        - Người lạ: Vàng (0, 255, 255)
+        - Người tình nghi: Đỏ (0, 0, 255)
+        """
+        annotated = frame.copy()
+        
+        for detection in detections:
+            top, right, bottom, left = detection['location']
+            label, color = self.face_recognizer.get_detection_label_and_color(detection)
+            
+            # Vẽ khung hình chữ nhật
+            thickness = 2
+            cv2.rectangle(annotated, (left, top), (right, bottom), color, thickness)
+            
+            # Vẽ nhãn
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.6
+            font_thickness = 2
+            
+            (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+            
+            # Vẽ hình chữ nhật nền cho text
+            text_bg_coords = (left, top - 30)
+            text_end_coords = (left + text_width + 10, top)
+            cv2.rectangle(annotated, text_bg_coords, text_end_coords, color, -1)
+            
+            # Vẽ text
+            text_coords = (left + 5, top - 10)
+            cv2.putText(annotated, label, text_coords, font, font_scale, (255, 255, 255), font_thickness)
+        
+        return annotated
+    
+    def _display_frame(self, frame: np.ndarray):
+        """
+        Hiển thị frame lên label.
+        Chuyển từ OpenCV (BGR) sang PIL (RGB) để hiển thị trên tkinter
+        """
+        try:
+            # Resize frame để vừa với label
+            h, w = frame.shape[:2]
+            max_width = 700
+            max_height = 500
+            
+            if w > max_width or h > max_height:
+                scale = min(max_width / w, max_height / h)
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+            
+            # Chuyển BGR sang RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Chuyển sang PIL Image
+            pil_image = Image.fromarray(frame_rgb)
+            
+            # Chuyển sang PhotoImage
+            photo = ImageTk.PhotoImage(pil_image)
+            
+            # Cập nhật label
+            self.video_label.configure(image=photo, text="")
+            self.video_label.image = photo
+            
+            # Cập nhật thông tin
+            camera_info = self.camera_manager.get_camera_info(self.selected_camera_id)
+            if camera_info:
+                fps = camera_info.get('fps', 0)
+                frame_count = camera_info.get('frame_count', 0)
+                self.info_label.configure(text=f"FPS: {fps} | Frame: {frame_count}")
+        
+        except Exception as e:
+            logger.error(f"Error displaying frame: {e}")
+    
+    def _process_detection(self, detection: dict):
+        """Xử lý sự kiện phát hiện (ghi DB, cảnh báo)"""
+        try:
+            is_match = detection['is_match']
+            category = detection['category']
+            user_id = detection['user_id']
+            name = detection['name']
+            
+            # Chỉ ghi lại khi phát hiện người lạ hoặc người tình nghi
+            if not is_match or category == 'blacklist':
+                if is_match and category == 'blacklist':
+                    detection_type = 'suspicious'
+                    message = f"⚠️ CẢNH BÁO: Phát hiện người tình nghi: {name}"
+                else:
+                    detection_type = 'unknown'
+                    message = "👤 Phát hiện người lạ"
+                
+                # Ghi vào database
+                self.db_manager.log_detection(
+                    camera_id=self.selected_camera_id,
+                    detection_type=detection_type,
+                    user_id=user_id,
+                    user_name=name
+                )
+                
+                # Hiển thị cảnh báo
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                self._add_alert(f"[{timestamp}] {message}")
+        
+        except Exception as e:
+            logger.error(f"Error processing detection: {e}")
+    
+    def _stop_monitoring(self):
+        """Dừng giám sát camera"""
+        self.stop_monitor_event.set()
+        self.is_monitoring = False
+        
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=2)
+        
+        # Cập nhật UI
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        
+        self._add_alert("⏹️ Đã dừng giám sát")
+        logger.info("Stopped monitoring")
+    
+    def _add_alert(self, message: str):
+        """Thêm tin nhắn cảnh báo"""
+        try:
+            self.alert_text.configure(state="normal")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Thêm message
+            if self.alert_text.get("1.0", "end-1c"):
+                self.alert_text.insert("1.0", f"\n{message}")
+            else:
+                self.alert_text.insert("1.0", message)
+            
+            # Giới hạn dòng (giữ 100 dòng cuối cùng)
+            lines = int(self.alert_text.index("end-1c").split(".")[0])
+            if lines > 100:
+                self.alert_text.delete("1.0", "101.0")
+            
+            # Scroll tới cuối
+            self.alert_text.see("end")
+            
+            self.alert_text.configure(state="disabled")
+        
+        except Exception as e:
+            logger.error(f"Error adding alert: {e}")
+    
+    def _clear_alerts(self):
+        """Xóa tất cả cảnh báo"""
+        self.alert_text.configure(state="normal")
+        self.alert_text.delete("1.0", "end")
+        self.alert_text.configure(state="disabled")
+    
+    def cleanup(self):
+        """Dọn dẹp khi đóng tab"""
+        self._stop_monitoring()
+        logger.info("MonitorTab cleaned up")
