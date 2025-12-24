@@ -20,8 +20,8 @@ class DatabaseManager:
     Quản lý cơ sở dữ liệu SQLite3 cho hệ thống giám sát an ninh.
     
     Bảng:
-    - users: Lưu thông tin người dùng (id, name, category, created_at)
-    - face_encodings: Lưu vector mã hóa khuôn mặt (id, user_id, encoding)
+    - users: Lưu thông tin người dùng (id, name, category, image_path, features, created_at)
+    - cameras: Quản lý danh sách camera
     - detection_history: Lưu lịch sử phát hiện (id, user_id, camera_id, timestamp, detection_type)
     """
     
@@ -43,25 +43,16 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path)
             cursor = self.conn.cursor()
             
-            # Bảng users: Lưu thông tin người dùng
+            # Bảng users: Lưu thông tin người dùng + Zernike features
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     category TEXT NOT NULL,  -- 'whitelist' hoặc 'blacklist'
                     image_path TEXT,
+                    features BLOB,  -- Pickle-serialized numpy array (Zernike moments)
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(name)
-                )
-            ''')
-            
-            # Bảng face_encodings: Lưu vector đặc trưng khuôn mặt
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS face_encodings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    encoding BLOB NOT NULL,  -- Pickle-serialized numpy array
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             ''')
             
@@ -133,7 +124,7 @@ class DatabaseManager:
         """Lấy danh sách tất cả người dùng"""
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT id, name, category, image_path, created_at FROM users')
+            cursor.execute('SELECT id, name, category, image_path, features, created_at FROM users')
             users = []
             for row in cursor.fetchall():
                 users.append({
@@ -141,7 +132,8 @@ class DatabaseManager:
                     'name': row[1],
                     'category': row[2],
                     'image_path': row[3],
-                    'created_at': row[4]
+                    'features': row[4],
+                    'created_at': row[5]
                 })
             return users
         except sqlite3.Error as e:
@@ -152,14 +144,15 @@ class DatabaseManager:
         """Lấy thông tin người dùng theo ID"""
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT id, name, category, image_path FROM users WHERE id = ?', (user_id,))
+            cursor.execute('SELECT id, name, category, image_path, features FROM users WHERE id = ?', (user_id,))
             row = cursor.fetchone()
             if row:
                 return {
                     'id': row[0],
                     'name': row[1],
                     'category': row[2],
-                    'image_path': row[3]
+                    'image_path': row[3],
+                    'features': row[4]
                 }
             return None
         except sqlite3.Error as e:
@@ -189,15 +182,15 @@ class DatabaseManager:
             logger.error(f"Error updating user category: {e}")
             return False
     
-    # ==================== FACE ENCODING MANAGEMENT ====================
+    # ==================== FACE FEATURES MANAGEMENT ====================
     
-    def add_face_encoding(self, user_id: int, encoding: 'np.ndarray') -> bool:
+    def update_user_features(self, user_id: int, features: 'np.ndarray') -> bool:
         """
-        Lưu vector mã hóa khuôn mặt.
+        Cập nhật vector đặc trưng Zernike cho người dùng.
         
         Args:
             user_id: ID người dùng
-            encoding: numpy array từ face_recognition
+            features: numpy array chứa Zernike moments
         
         Returns:
             True nếu thành công
@@ -205,52 +198,59 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             # Serialize numpy array thành BLOB
-            encoding_blob = pickle.dumps(encoding)
+            features_blob = pickle.dumps(features)
             cursor.execute('''
-                INSERT INTO face_encodings (user_id, encoding)
-                VALUES (?, ?)
-            ''', (user_id, encoding_blob))
+                UPDATE users SET features = ? WHERE id = ?
+            ''', (features_blob, user_id))
             self.conn.commit()
-            logger.info(f"Face encoding added for user {user_id}")
+            logger.info(f"Features updated for user {user_id}")
             return True
         except sqlite3.Error as e:
-            logger.error(f"Error adding face encoding: {e}")
+            logger.error(f"Error updating user features: {e}")
             return False
     
-    def get_face_encodings(self, user_id: int) -> List:
-        """Lấy tất cả encoding của một người dùng"""
+    def get_user_features(self, user_id: int) -> Optional['np.ndarray']:
+        """
+        Lấy vector đặc trưng Zernike của một người dùng.
+        
+        Args:
+            user_id: ID người dùng
+        
+        Returns:
+            numpy array hoặc None nếu không có
+        """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('''
-                SELECT encoding FROM face_encodings WHERE user_id = ?
-            ''', (user_id,))
-            encodings = []
-            for row in cursor.fetchall():
-                encoding = pickle.loads(row[0])
-                encodings.append(encoding)
-            return encodings
+            cursor.execute('SELECT features FROM users WHERE id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                features = pickle.loads(row[0])
+                return np.array(features)
+            return None
         except sqlite3.Error as e:
-            logger.error(f"Error fetching face encodings: {e}")
-            return []
+            logger.error(f"Error fetching user features: {e}")
+            return None
     
-    def get_all_face_encodings(self) -> Dict[int, List]:
-        """Lấy tất cả encoding của tất cả người dùng (dạng dict)"""
+    def get_all_user_features(self) -> Dict[int, 'np.ndarray']:
+        """
+        Lấy tất cả vector đặc trưng của tất cả người dùng.
+        
+        Returns:
+            Dict {user_id: features_array}
+        """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT id FROM users')
-            users = cursor.fetchall()
-            
-            encodings_dict = {}
-            for user in users:
-                user_id = user[0]
-                encodings = self.get_face_encodings(user_id)
-                if encodings:
-                    encodings_dict[user_id] = encodings
-            
-            return encodings_dict
+            cursor.execute('SELECT id, features FROM users WHERE features IS NOT NULL')
+            features_dict = {}
+            for row in cursor.fetchall():
+                user_id = row[0]
+                features = pickle.loads(row[1])
+                features_dict[user_id] = np.array(features)
+            return features_dict
         except sqlite3.Error as e:
-            logger.error(f"Error fetching all face encodings: {e}")
+            logger.error(f"Error fetching all user features: {e}")
             return {}
+    
     
     # ==================== CAMERA MANAGEMENT ====================
     
