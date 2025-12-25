@@ -244,9 +244,33 @@ class MonitorTab(ctk.CTkFrame):
         self._add_alert(f"Đã chọn camera: {camera_name}")
         
         logger.info(f"Selected camera {camera_id}: {camera_name}")
-    
+
     def _start_monitoring(self):
-        """Bắt đầu giám sát camera được chọn"""
+        if not self.selected_camera_id:
+            self._add_alert("❌ Chưa chọn camera!")
+            return
+
+        # Lấy thông tin từ DB để có link RTSP
+        camera_info = self.db_manager.get_camera_by_id(self.selected_camera_id)
+        if not camera_info:
+            self._add_alert("❌ Không tìm thấy URL camera!")
+            return
+
+        # QUAN TRỌNG: Ra lệnh cho CameraManager kết nối RTSP
+        self.camera_manager.start_camera(self.selected_camera_id, camera_info['rtsp_url'])
+
+        self.is_monitoring = True
+        self.stop_monitor_event.clear()
+        self.face_recognizer.load_known_faces()
+        
+        self.monitor_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
+        self.monitor_thread.start()
+        
+        self.start_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+    """
+    def _start_monitoring(self):
+        
         if not self.selected_camera_id:
             self._add_alert("❌ Vui lòng chọn camera trước khi bắt đầu!")
             return
@@ -271,7 +295,7 @@ class MonitorTab(ctk.CTkFrame):
         
         self._add_alert(f"✅ Bắt đầu giám sát camera {self.selected_camera_id}...")
         logger.info(f"Started monitoring camera {self.selected_camera_id}")
-    
+    """
     def _monitoring_loop(self):
         """
         Luồng giám sát: Lặp vô hạn, lấy frame, nhận diện, hiển thị
@@ -366,37 +390,77 @@ class MonitorTab(ctk.CTkFrame):
     def _process_detection(self, detection: dict):
         """Xử lý sự kiện phát hiện (ghi DB, cảnh báo)"""
         try:
-            is_match = detection['is_match']
-            category = detection['category']
-            user_id = detection['user_id']
             name = detection['name']
+            user_id = detection['user_id']
             
-            # Chỉ ghi lại khi phát hiện người lạ hoặc người tình nghi
-            if not is_match or category == 'blacklist':
-                if is_match and category == 'blacklist':
-                    detection_type = 'suspicious'
-                    message = f"⚠️ CẢNH BÁO: Phát hiện người tình nghi: {name}"
-                else:
-                    detection_type = 'unknown'
-                    message = "👤 Phát hiện người lạ"
-                
-                # Ghi vào database
-                self.db_manager.log_detection(
-                    camera_id=self.selected_camera_id,
-                    detection_type=detection_type,
-                    user_id=user_id,
-                    user_name=name
-                )
-                
-                # Hiển thị cảnh báo
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                self._add_alert(f"[{timestamp}] {message}")
+            # Gọi lại thread chính để xử lý
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            self.after(0, lambda: self._safe_log_detection(
+                camera_id=self.selected_camera_id,
+                user_id=user_id,
+                user_name=name,
+                timestamp=timestamp
+            ))
         
         except Exception as e:
             logger.error(f"Error processing detection: {e}")
-    
+
+    def _safe_log_detection(self, camera_id, user_id, user_name, timestamp):
+        """Ghi detection an toàn từ thread chính"""
+        try:
+            if user_name == "Unknown":
+                detection_type = 'unknown'
+                message = "👤 Phát hiện người lạ"
+            else:
+                # Kiểm tra category từ database
+                if user_id:
+                    user_info = self.db_manager.get_user_by_id(user_id)
+                    if user_info and user_info['category'] == 'blacklist':
+                        detection_type = 'suspicious'
+                        message = f"⚠️ CẢNH BÁO: Phát hiện người tình nghi: {user_name}"
+                    else:
+                        detection_type = 'known'
+                        message = f"✅ Phát hiện người quen: {user_name}"
+                else:
+                    detection_type = 'unknown'
+                    message = f"👤 Phát hiện người không xác định: {user_name}"
+            
+            # Ghi vào database
+            self.db_manager.log_detection(
+                camera_id=camera_id,
+                detection_type=detection_type,
+                user_id=user_id,
+                user_name=user_name
+            )
+            
+            # Chỉ hiển thị cảnh báo cho người lạ và tình nghi
+            if detection_type != 'known':
+                self._add_alert(f"[{timestamp}] {message}")
+            
+        except Exception as e:
+            logger.error(f"Error in safe_log_detection: {e}")
+
     def _stop_monitoring(self):
         """Dừng giám sát camera"""
+        self.stop_monitor_event.set()
+        self.is_monitoring = False
+        
+        # Dừng luồng đọc camera của CameraManager
+        self.camera_manager.stop_camera(self.selected_camera_id)
+        
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=2)
+        
+        # Xóa ảnh cũ trên UI
+        self.video_label.configure(image="", text="Đã dừng giám sát")
+        
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self._add_alert("⏹️ Đã dừng giám sát và ngắt kết nối")
+    """
+    def _stop_monitoring(self):
+        
         self.stop_monitor_event.set()
         self.is_monitoring = False
         
@@ -409,6 +473,7 @@ class MonitorTab(ctk.CTkFrame):
         
         self._add_alert("⏹️ Đã dừng giám sát")
         logger.info("Stopped monitoring")
+    """
     
     def _add_alert(self, message: str):
         """Thêm tin nhắn cảnh báo"""
