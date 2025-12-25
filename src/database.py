@@ -311,7 +311,34 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"Error updating camera status: {e}")
             return False
-    
+        
+    def update_camera(self, camera_id, name, rtsp_url):
+        """Cập nhật thông tin camera"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                UPDATE cameras 
+                SET name = ?, rtsp_url = ?
+                WHERE id = ?
+            ''', (name, rtsp_url, camera_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating camera: {e}")
+            return False
+        
+    def get_camera_by_id(self, camera_id):
+        """Lấy thông tin camera để lấy link RTSP"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id, name, rtsp_url FROM cameras WHERE id = ?", (camera_id,))
+            row = cursor.fetchone()
+            if row:
+                return {"id": row[0], "name": row[1], "rtsp_url": row[2]}
+            return None
+        except Exception as e:
+            print(f"Lỗi DB: {e}")
+            return None
     # ==================== DETECTION HISTORY ====================
     
     def log_detection(self, camera_id: int, detection_type: str, user_id: int = None, user_name: str = None) -> bool:
