@@ -2,18 +2,17 @@
 Module GUI chính sử dụng customtkinter
 Cấu trúc ứng dụng với 4 tab: Monitor, Camera Setup, Face Database, Statistics
 """
-
+import sys
+import os
 import customtkinter as ctk
 from PIL import Image
 import logging
-import sys
-import os
 
 # Thêm src vào path để import các module khác
 sys.path.insert(0, os.path.dirname(__file__))
 
 from database import DatabaseManager
-from src.face_recognizer import FaceRecognizer
+from face_recognizer import FaceRecognizer
 from camera_handler import CameraManager
 
 # Import các tab GUI
@@ -145,18 +144,26 @@ class MainApp(ctk.CTk):
         """Xử lý khi đóng ứng dụng"""
         logger.info("Closing application...")
         
-        # Dừng tất cả camera
-        self.camera_manager.stop_all()
+        try:
+            # Dừng tất cả camera
+            if hasattr(self, 'camera_manager'):
+                self.camera_manager.stop_all()
+            
+            # Đóng database
+            if hasattr(self, 'db_manager'):
+                self.db_manager.close()
+            
+            # Đóng các tab
+            if hasattr(self, 'monitor_tab'):
+                self.monitor_tab.cleanup()
+            
+            logger.info("Application closed successfully")
         
-        # Đóng database
-        self.db_manager.close()
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
         
-        # Đóng các tab
-        if hasattr(self, 'monitor_tab'):
-            self.monitor_tab.cleanup()
-        
-        logger.info("Application closed successfully")
-        self.destroy()
+        finally:
+            self.destroy()
 
 
 def main():
