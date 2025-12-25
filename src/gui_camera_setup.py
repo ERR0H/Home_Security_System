@@ -276,48 +276,87 @@ class CameraSetupTab(ctk.CTkFrame):
             messagebox.showwarning("Cảnh báo", "Vui lòng nhập RTSP URL!")
             return
         
+        # Sửa lỗi chính tả phổ biến
+        original_url = rtsp_url
+        if rtsp_url.startswith("rstp://"):
+            rtsp_url = "rtsp://" + rtsp_url[7:]
+            self.url_entry.delete(0, "end")
+            self.url_entry.insert(0, rtsp_url)
+            messagebox.showinfo("Thông báo", f"Đã tự động sửa URL:\n{original_url}\n→ {rtsp_url}")
+        
         self.is_testing = True
         self.test_btn.configure(state="disabled", text="⏳ Đang test...")
         
         # Chạy test trong thread riêng để không block GUI
         def test_rtsp():
             try:
+                # Kiểm tra các định dạng URL phổ biến
+                common_errors = [
+                    ("rstp://", "rtsp://"),
+                    ("rtsp//", "rtsp://"),
+                    ("http://", "rtsp://"),
+                    ("https://", "rtsps://")
+                ]
+                
+                for wrong, correct in common_errors:
+                    if rtsp_url.startswith(wrong):
+                        suggestion = correct + rtsp_url[len(wrong):]
+                        messagebox.showwarning("URL có thể sai", 
+                            f"URL có thể bị sai định dạng:\n"
+                            f"Hiện tại: {rtsp_url}\n"
+                            f"Gợi ý: {suggestion}")
+                
                 cap = cv2.VideoCapture(rtsp_url)
+                
+                if not cap.isOpened():
+                    messagebox.showerror("Lỗi", f"❌ Không thể mở kết nối tới:\n{rtsp_url}")
+                    return
                 
                 # Thiết lập timeout
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 
-                # Cho time kết nối
-                import time
-                start_time = time.time()
-                
-                # Thử đọc frame với timeout
+                # Thử đọc frame
                 success = False
                 attempts = 0
-                timeout = 10  # 10 giây
+                max_attempts = 10
                 
-                while time.time() - start_time < timeout and attempts < 10:
+                for i in range(max_attempts):
                     ret, frame = cap.read()
                     attempts += 1
                     
                     if ret and frame is not None:
                         success = True
-                        logger.info(f"Frame read successfully at attempt {attempts}")
+                        # Hiển thị thông tin frame
+                        height, width = frame.shape[:2]
+                        channels = frame.shape[2] if len(frame.shape) > 2 else 1
                         break
-                    
-                    logger.debug(f"Attempt {attempts}: ret={ret}")
                 
                 cap.release()
                 
                 if success:
-                    messagebox.showinfo("Thành Công", f"✅ Kết nối RTSP thành công!\nFrame đọc được sau {attempts} lần thử")
+                    messagebox.showinfo("Thành Công", 
+                        f"✅ Kết nối RTSP thành công!\n"
+                        f"URL: {rtsp_url}\n"
+                        f"Kích thước frame: {width}x{height}\n"
+                        f"Kênh màu: {channels}")
                     logger.info(f"RTSP connection test successful: {rtsp_url}")
                 else:
-                    messagebox.showerror("Lỗi", f"❌ Không thể đọc frame từ RTSP URL\nĐã thử {attempts} lần trong {timeout}s")
+                    messagebox.showerror("Lỗi", 
+                        f"❌ Kết nối được nhưng không đọc được frame!\n"
+                        f"Đã thử {attempts} lần\n"
+                        f"URL: {rtsp_url}")
                     logger.warning(f"RTSP connection test failed: Could not read frame after {attempts} attempts")
             
             except Exception as e:
-                messagebox.showerror("Lỗi", f"❌ Lỗi kết nối:\n{type(e).__name__}: {str(e)}")
+                messagebox.showerror("Lỗi", 
+                    f"❌ Lỗi kết nối:\n"
+                    f"URL: {rtsp_url}\n"
+                    f"Lỗi: {type(e).__name__}: {str(e)}\n\n"
+                    f"Kiểm tra:\n"
+                    f"1. Địa chỉ IP camera\n"
+                    f"2. Tài khoản/mật khẩu\n"
+                    f"3. Cổng RTSP (thường là 554)\n"
+                    f"4. Đường dẫn stream (thường là /h264 or /main)")
                 logger.error(f"RTSP connection test error: {type(e).__name__}: {e}", exc_info=True)
             
             finally:
@@ -390,23 +429,30 @@ class CameraSetupTab(ctk.CTkFrame):
             return
         
         try:
-            # Update trong DB (đơn giản: xóa rồi thêm lại)
-            self.db_manager.delete_camera(self.editing_camera_id)
+            # Sửa: Cập nhật trực tiếp thay vì xóa rồi thêm
+            success = self.db_manager.update_camera(
+                self.editing_camera_id, 
+                name, 
+                rtsp_url
+            )
             
-            # Xóa khỏi CameraManager
-            self.camera_manager.remove_camera(self.editing_camera_id)
-            
-            # Thêm lại
-            new_id = self.db_manager.add_camera(name, rtsp_url)
-            self.camera_manager.add_camera(new_id, rtsp_url, name)
-            
-            messagebox.showinfo("Thành Công", "✅ Cập nhật camera thành công!")
-            
-            # Reset form
-            self._cancel_edit()
-            self._load_camera_list()
-            
-            logger.info(f"Camera updated: {name} ({rtsp_url})")
+            if success:
+                # Cập nhật trong CameraManager
+                self.camera_manager.update_camera(
+                    self.editing_camera_id,
+                    rtsp_url=rtsp_url,
+                    name=name
+                )
+                
+                messagebox.showinfo("Thành Công", "✅ Cập nhật camera thành công!")
+                
+                # Reset form
+                self._cancel_edit()
+                self._load_camera_list()
+                
+                logger.info(f"Camera updated: ID {self.editing_camera_id}, {name} ({rtsp_url})")
+            else:
+                messagebox.showerror("Lỗi", "❌ Không tìm thấy camera để cập nhật!")
         
         except Exception as e:
             messagebox.showerror("Lỗi", f"❌ Lỗi cập nhật camera: {str(e)}")
