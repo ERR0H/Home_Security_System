@@ -7,9 +7,11 @@ import sqlite3
 import pickle
 import os
 import numpy as np
+import threading
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 import logging
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +37,8 @@ class DatabaseManager:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = None
+        # Lock để bảo vệ truy cập database từ nhiều thread
+        self.db_lock = threading.RLock()
         self.init_database()
     
     def init_database(self):
@@ -104,14 +108,15 @@ class DatabaseManager:
             ID của người dùng vừa thêm
         """
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                INSERT INTO users (name, category, image_path)
-                VALUES (?, ?, ?)
-            ''', (name, category, image_path))
-            self.conn.commit()
-            logger.info(f"User '{name}' added with ID {cursor.lastrowid}")
-            return cursor.lastrowid
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO users (name, category, image_path)
+                    VALUES (?, ?, ?)
+                ''', (name, category, image_path))
+                self.conn.commit()
+                logger.info(f"User '{name}' added with ID {cursor.lastrowid}")
+                return cursor.lastrowid
         
         except sqlite3.IntegrityError:
             logger.warning(f"User '{name}' already exists")
@@ -162,9 +167,10 @@ class DatabaseManager:
     def delete_user(self, user_id: int) -> bool:
         """Xóa người dùng và tất cả dữ liệu liên quan"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+                self.conn.commit()
             logger.info(f"User {user_id} deleted")
             return True
         except sqlite3.Error as e:
@@ -174,9 +180,10 @@ class DatabaseManager:
     def update_user_category(self, user_id: int, category: str) -> bool:
         """Cập nhật loại phân loại người dùng"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('UPDATE users SET category = ? WHERE id = ?', (category, user_id))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('UPDATE users SET category = ? WHERE id = ?', (category, user_id))
+                self.conn.commit()
             return True
         except sqlite3.Error as e:
             logger.error(f"Error updating user category: {e}")
@@ -196,13 +203,14 @@ class DatabaseManager:
             True nếu thành công
         """
         try:
-            cursor = self.conn.cursor()
-            # Serialize numpy array thành BLOB
-            features_blob = pickle.dumps(features)
-            cursor.execute('''
-                UPDATE users SET features = ? WHERE id = ?
-            ''', (features_blob, user_id))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                # Serialize numpy array thành BLOB
+                features_blob = pickle.dumps(features)
+                cursor.execute('''
+                    UPDATE users SET features = ? WHERE id = ?
+                ''', (features_blob, user_id))
+                self.conn.commit()
             logger.info(f"Features updated for user {user_id}")
             return True
         except sqlite3.Error as e:
@@ -257,12 +265,13 @@ class DatabaseManager:
     def add_camera(self, name: str, rtsp_url: str) -> Optional[int]:
         """Thêm camera mới"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                INSERT INTO cameras (name, rtsp_url, status)
-                VALUES (?, ?, 'inactive')
-            ''', (name, rtsp_url))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO cameras (name, rtsp_url, status)
+                    VALUES (?, ?, 'inactive')
+                ''', (name, rtsp_url))
+                self.conn.commit()
             logger.info(f"Camera '{name}' added with ID {cursor.lastrowid}")
             return cursor.lastrowid
         except sqlite3.IntegrityError:
@@ -293,9 +302,10 @@ class DatabaseManager:
     def delete_camera(self, camera_id: int) -> bool:
         """Xóa camera"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('DELETE FROM cameras WHERE id = ?', (camera_id,))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('DELETE FROM cameras WHERE id = ?', (camera_id,))
+                self.conn.commit()
             return True
         except sqlite3.Error as e:
             logger.error(f"Error deleting camera: {e}")
@@ -304,9 +314,10 @@ class DatabaseManager:
     def update_camera_status(self, camera_id: int, status: str) -> bool:
         """Cập nhật trạng thái camera (active/inactive)"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('UPDATE cameras SET status = ? WHERE id = ?', (status, camera_id))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('UPDATE cameras SET status = ? WHERE id = ?', (status, camera_id))
+                self.conn.commit()
             return True
         except sqlite3.Error as e:
             logger.error(f"Error updating camera status: {e}")
@@ -315,13 +326,14 @@ class DatabaseManager:
     def update_camera(self, camera_id, name, rtsp_url):
         """Cập nhật thông tin camera"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                UPDATE cameras 
-                SET name = ?, rtsp_url = ?
-                WHERE id = ?
-            ''', (name, rtsp_url, camera_id))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    UPDATE cameras 
+                    SET name = ?, rtsp_url = ?
+                    WHERE id = ?
+                ''', (name, rtsp_url, camera_id))
+                self.conn.commit()
             return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Error updating camera: {e}")
@@ -355,12 +367,13 @@ class DatabaseManager:
             True nếu thành công
         """
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                INSERT INTO detection_history (user_id, camera_id, detection_type, user_name, timestamp)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (user_id, camera_id, detection_type, user_name))
-            self.conn.commit()
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO detection_history (user_id, camera_id, detection_type, user_name, timestamp)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (user_id, camera_id, detection_type, user_name))
+                self.conn.commit()
             return True
         except sqlite3.Error as e:
             logger.error(f"Error logging detection: {e}")
@@ -398,12 +411,25 @@ class DatabaseManager:
             
             history = []
             for row in cursor.fetchall():
+                # Chuyển đổi timestamp từ UTC sang múi giờ địa phương
+                timestamp_str = row[4]
+                try:
+                    # Parse timestamp từ database (UTC format)
+                    utc_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                    # Chuyển sang múi giờ địa phương
+                    local_time = utc_time.astimezone()
+                    # Format lại thành string
+                    formatted_timestamp = local_time.strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    # Nếu parse fail, giữ nguyên
+                    formatted_timestamp = timestamp_str
+                
                 history.append({
                     'id': row[0],
                     'user_name': row[1],
                     'camera_id': row[2],
                     'detection_type': row[3],
-                    'timestamp': row[4]
+                    'timestamp': formatted_timestamp
                 })
             return history
         except sqlite3.Error as e:
@@ -457,6 +483,110 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"Error fetching statistics: {e}")
             return {}
+    
+    def should_log_detection(self, camera_id: int, user_id: int, user_name: str, threshold_seconds: int = 60) -> bool:
+        """
+        Kiểm tra xem có nên ghi nhận sự kiện phát hiện hay không.
+        Tránh ghi nhận quá nhiều cùng một người trong khoảng thời gian ngắn.
+        
+        Args:
+            camera_id: ID camera
+            user_id: ID người dùng (None nếu là người lạ)
+            user_name: Tên người dùng
+            threshold_seconds: Khoảng thời gian tối thiểu giữa các lần ghi nhận (mặc định 60 giây)
+        
+        Returns:
+            True nếu nên ghi nhận, False nếu đã ghi nhận gần đây
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Tìm lần ghi nhận gần nhất của cùng người trên cùng camera
+            cursor.execute('''
+                SELECT timestamp FROM detection_history
+                WHERE camera_id = ? AND user_name = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (camera_id, user_name))
+            
+            result = cursor.fetchone()
+            
+            if not result:
+                # Chưa có ghi nhận nào trước đó
+                return True
+            
+            last_detection_time = result[0]
+            
+            # Parse timestamp (SQLite format: 'YYYY-MM-DD HH:MM:SS.SSS')
+            try:
+                last_time = datetime.strptime(last_detection_time, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                last_time = datetime.strptime(last_detection_time, "%Y-%m-%d %H:%M:%S")
+            
+            current_time = datetime.now()
+            
+            # Tính thời gian chênh lệch
+            time_diff = (current_time - last_time).total_seconds()
+            
+            # Nếu quá 'threshold_seconds' thì có thể ghi nhận lại
+            return time_diff >= threshold_seconds
+        
+        except sqlite3.Error as e:
+            logger.error(f"Error checking detection threshold: {e}")
+            # Nếu lỗi, cho phép ghi nhận để không mất dữ liệu
+            return True
+    
+    def delete_detection_history(self, days: int = None, detection_type: str = None, user_name: str = None) -> bool:
+        """
+        Xóa dữ liệu lịch sử phát hiện.
+        
+        Args:
+            days: Xóa lịch sử trong N ngày gần nhất (nếu None thì xóa tất cả)
+            detection_type: Xóa theo loại ('known', 'unknown', 'suspicious'), None để xóa tất cả loại
+            user_name: Xóa theo tên người, None để xóa tất cả người
+        
+        Returns:
+            True nếu thành công
+        """
+        try:
+            with self.db_lock:
+                cursor = self.conn.cursor()
+                
+                # Xây dựng query động
+                query = "DELETE FROM detection_history WHERE 1=1"
+                params = []
+                
+                if days is not None:
+                    query += " AND datetime(timestamp) >= datetime('now', '-' || ? || ' days')"
+                    params.append(days)
+                
+                if detection_type:
+                    query += " AND detection_type = ?"
+                    params.append(detection_type)
+                
+                if user_name:
+                    query += " AND user_name = ?"
+                    params.append(user_name)
+                
+                cursor.execute(query, params)
+                self.conn.commit()
+                
+                deleted_count = cursor.rowcount
+                logger.info(f"Deleted {deleted_count} detection records")
+            return True
+        
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting detection history: {e}")
+            return False
+    
+    def clear_all_detection_history(self) -> bool:
+        """
+        Xóa tất cả lịch sử phát hiện.
+        
+        Returns:
+            True nếu thành công
+        """
+        return self.delete_detection_history()
     
     def close(self):
         """Đóng kết nối cơ sở dữ liệu"""
