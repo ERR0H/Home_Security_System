@@ -157,12 +157,16 @@ class CameraSetupTab(ctk.CTkFrame):
         table_frame.grid_rowconfigure(1, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
         
-        # Header
+        # Header - Sửa tỷ lệ cột cho cân đối
         header_frame = ctk.CTkFrame(table_frame, fg_color=("gray70", "gray35"))
         header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
-        header_frame.grid_columnconfigure((1, 2), weight=1)
+        # Phân bổ tỷ lệ: ID(10%), Tên(30%), URL(45%), Hành động(15%)
+        header_frame.grid_columnconfigure(0, weight=1, minsize=50)  # ID
+        header_frame.grid_columnconfigure(1, weight=3, minsize=150)  # Tên Camera
+        header_frame.grid_columnconfigure(2, weight=4, minsize=200)  # RTSP URL
+        header_frame.grid_columnconfigure(3, weight=1, minsize=120)  # Hành động
         
-        headers = ["ID", "Tên Camera", "RTSP URL", "Trạng Thái", "Hành Động"]
+        headers = ["ID", "Tên Camera", "RTSP URL", "Hành Động"]
         for idx, header_text in enumerate(headers):
             header = ctk.CTkLabel(
                 header_frame,
@@ -172,14 +176,18 @@ class CameraSetupTab(ctk.CTkFrame):
             )
             header.grid(row=0, column=idx, padx=10, pady=10, sticky="ew")
         
-        # Scrollable frame cho camera items
+        # Scrollable frame cho camera items - Cùng tỷ lệ với header
         self.camera_list_frame = ctk.CTkScrollableFrame(
             table_frame,
             fg_color=("gray85", "gray25"),
             corner_radius=0
         )
         self.camera_list_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        self.camera_list_frame.grid_columnconfigure((1, 2), weight=1)
+        # Áp dụng cùng tỷ lệ grid cho các cột
+        self.camera_list_frame.grid_columnconfigure(0, weight=1, minsize=50)
+        self.camera_list_frame.grid_columnconfigure(1, weight=3, minsize=150)
+        self.camera_list_frame.grid_columnconfigure(2, weight=4, minsize=200)
+        self.camera_list_frame.grid_columnconfigure(3, weight=1, minsize=120)
     
     def _load_camera_list(self):
         """Tải và hiển thị danh sách camera"""
@@ -195,75 +203,81 @@ class CameraSetupTab(ctk.CTkFrame):
                 text="Chưa có camera. Vui lòng thêm camera mới.",
                 text_color="gray"
             )
-            no_camera_label.pack(padx=10, pady=10)
+            no_camera_label.grid(row=0, column=0, columnspan=4, padx=10, pady=20)
             return
         
         for idx, camera in enumerate(cameras):
             row = idx
             
-            # ID
+            # ID - căn giữa
             id_label = ctk.CTkLabel(
                 self.camera_list_frame,
                 text=str(camera['id']),
-                font=("Arial", 10)
+                font=("Arial", 10, "bold"),
+                justify="center"
             )
-            id_label.grid(row=row, column=0, padx=10, pady=8, sticky="w")
+            id_label.grid(row=row, column=0, padx=5, pady=8, sticky="")
             
-            # Tên
+            # Tên - căn trái
             name_label = ctk.CTkLabel(
                 self.camera_list_frame,
                 text=camera['name'],
-                font=("Arial", 10)
+                font=("Arial", 10),
+                justify="left"
             )
-            name_label.grid(row=row, column=1, padx=10, pady=8, sticky="ew")
+            name_label.grid(row=row, column=1, padx=10, pady=8, sticky="w")
             
-            # URL (rút gọn nếu quá dài)
+            # URL (rút gọn nếu quá dài) - hiển thị nhiều hơn
             url_text = camera['rtsp_url']
-            if len(url_text) > 40:
-                url_text = url_text[:37] + "..."
+            if len(url_text) > 60:  # Tăng từ 40 lên 60 ký tự
+                url_text = url_text[:57] + "..."
             
             url_label = ctk.CTkLabel(
                 self.camera_list_frame,
                 text=url_text,
                 font=("Arial", 9),
-                text_color="gray"
+                text_color=("gray50", "gray70"),
+                justify="left",
+                anchor="w"
             )
-            url_label.grid(row=row, column=2, padx=10, pady=8, sticky="ew")
+            url_label.grid(row=row, column=2, padx=10, pady=8, sticky="w")
             
-            # Trạng thái
-            status_text = camera['status'].upper()
-            status_color = "green" if camera['status'] == "active" else "gray"
+            # Tooltip cho URL đầy đủ khi hover
+            def make_tooltip(label, full_text):
+                def enter(event):
+                    label.configure(text=full_text)
+                def leave(event):
+                    shortened = full_text[:57] + "..." if len(full_text) > 60 else full_text
+                    label.configure(text=shortened)
+                
+                label.bind("<Enter>", enter)
+                label.bind("<Leave>", leave)
             
-            status_label = ctk.CTkLabel(
-                self.camera_list_frame,
-                text=status_text,
-                font=("Arial", 10),
-                text_color=status_color
-            )
-            status_label.grid(row=row, column=3, padx=10, pady=8)
+            make_tooltip(url_label, camera['rtsp_url'])
             
-            # Nút hành động
+            # Nút hành động - căn giữa
             action_frame = ctk.CTkFrame(self.camera_list_frame, fg_color="transparent")
-            action_frame.grid(row=row, column=4, padx=10, pady=8)
+            action_frame.grid(row=row, column=3, padx=5, pady=8, sticky="")
             
+            # Sử dụng button nhỏ hơn để tiết kiệm không gian
             edit_btn = ctk.CTkButton(
                 action_frame,
-                text="✏️ Sửa",
+                text="✏️",  # Chỉ icon
                 command=lambda cid=camera['id'], cname=camera['name'], curl=camera['rtsp_url']: 
                     self._edit_camera(cid, cname, curl),
-                width=60,
-                height=30,
-                font=("Arial", 9)
+                width=40,  # Giảm width
+                height=28,  # Giảm height
+                font=("Arial", 10)
             )
             edit_btn.pack(side="left", padx=2)
             
             delete_btn = ctk.CTkButton(
                 action_frame,
-                text="🗑️ Xóa",
+                text="🗑️",  # Chỉ icon
                 command=lambda cid=camera['id']: self._delete_camera(cid),
-                width=60,
-                height=30,
-                font=("Arial", 9),
+                width=40,
+                height=28,
+                font=("Arial", 10),
                 fg_color=("red", "#8B0000")
             )
             delete_btn.pack(side="left", padx=2)
