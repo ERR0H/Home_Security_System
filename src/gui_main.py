@@ -1,6 +1,6 @@
 """
 Module GUI chính sử dụng customtkinter
-Cấu trúc ứng dụng với 4 tab: Monitor, Camera Setup, Face Database, Statistics
+Cấu trúc ứng dụng với 6 tab: Monitor, Monitor Grid, Camera Setup, Face Database, Statistics, Info
 """
 import sys
 import os
@@ -17,9 +17,11 @@ from camera_handler import CameraManager
 
 # Import các tab GUI
 from gui_monitor import MonitorTab
+from gui_monitor_grid import MonitorGridTab
 from gui_camera_setup import CameraSetupTab
 from gui_face_db import FaceDBTab
 from gui_statistics import StatisticsTab
+from gui_info import InfoTab
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +31,12 @@ class MainApp(ctk.CTk):
     Ứng dụng GUI chính.
     
     Cấu trúc:
-    - Tab 1: Monitor Center (Giám sát trực tiếp)
-    - Tab 2: Camera Setup (Quản lý camera)
-    - Tab 3: Face Database (Quản lý khuôn mặt)
-    - Tab 4: Statistics (Thống kê & Lịch sử)
+    - Tab 1: Monitor Center (Giám sát 1 camera chi tiết)
+    - Tab 2: Monitor Grid (Giám sát nhiều camera - Grid 2x2)
+    - Tab 3: Camera Setup (Quản lý camera)
+    - Tab 4: Face Database (Quản lý khuôn mặt)
+    - Tab 5: Statistics (Thống kê & Lịch sử)
+    - Tab 6: Info (Thông tin ứng dụng)
     """
     
     def __init__(self):
@@ -92,13 +96,22 @@ class MainApp(ctk.CTk):
         
         # Tạo các tab
         tab_monitor = self.tabview.add("📹 Giám Sát")
+        tab_monitor_grid = self.tabview.add("📺 Giám Sát Toàn Cảnh")
         tab_camera_setup = self.tabview.add("📷 Cài Đặt Camera")
         tab_face_db = self.tabview.add("👤 Quản Lý Khuôn Mặt")
         tab_statistics = self.tabview.add("📊 Thống Kê")
+        tab_info = self.tabview.add("ℹ️ Thông Tin")
         
         # Khởi tạo các Tab GUI
         self.monitor_tab = MonitorTab(
             tab_monitor,
+            self.db_manager,
+            self.face_recognizer,
+            self.camera_manager
+        )
+        
+        self.monitor_grid_tab = MonitorGridTab(
+            tab_monitor_grid,
             self.db_manager,
             self.face_recognizer,
             self.camera_manager
@@ -121,18 +134,7 @@ class MainApp(ctk.CTk):
             self.db_manager
         )
         
-        # Status bar (dưới cùng)
-        status_bar = ctk.CTkFrame(self, fg_color=("gray85", "gray25"))
-        status_bar.pack(side="bottom", fill="x", padx=0, pady=0)
-        
-        self.status_label = ctk.CTkLabel(
-            status_bar,
-            text="Ready",
-            font=("Arial", 10),
-            text_color=("black", "white"),
-            justify="left"
-        )
-        self.status_label.pack(side="left", padx=10, pady=5)
+        self.info_tab = InfoTab(tab_info)        
         
         logger.info("UI setup completed")
     
@@ -156,6 +158,9 @@ class MainApp(ctk.CTk):
             # Đóng các tab
             if hasattr(self, 'monitor_tab'):
                 self.monitor_tab.cleanup()
+            
+            if hasattr(self, 'monitor_grid_tab'):
+                self.monitor_grid_tab.cleanup()
             
             logger.info("Application closed successfully")
         

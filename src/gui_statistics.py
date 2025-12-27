@@ -7,6 +7,7 @@ import customtkinter as ctk
 from tkinter import ttk, messagebox
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class StatisticsTab(ctk.CTkFrame):
             text="📈 Thống Kê Tổng Hợp",
             font=("Arial", 13, "bold")
         )
-        title3.grid(row=0, column=0, columnspan=4, padx=10, pady=10, sticky="w")
+        title3.grid(row=0, column=0, columnspan=5, padx=10, pady=10, sticky="w")
         
         # Thống kê boxes
         self.total_label = ctk.CTkLabel(stats_frame, text="Tổng Phát Hiện: 0", font=("Arial", 11))
@@ -197,6 +198,19 @@ class StatisticsTab(ctk.CTkFrame):
         
         self.suspicious_label = ctk.CTkLabel(stats_frame, text="Tình Nghi: 0", font=("Arial", 11))
         self.suspicious_label.grid(row=1, column=3, padx=10, pady=10, sticky="w")
+        
+        # Nút xóa dữ liệu
+        delete_btn = ctk.CTkButton(
+            stats_frame,
+            text="🗑️ Xóa Dữ Liệu",
+            command=self._show_delete_menu,
+            width=120,
+            height=35,
+            font=("Arial", 10),
+            fg_color=("red", "#8B0000"),
+            hover_color=("darkred", "#5c0000")
+        )
+        delete_btn.grid(row=1, column=4, padx=10, pady=10, sticky="e")
     
     def _filter_by_days(self, days: int):
         """Lọc dữ liệu theo số ngày"""
@@ -260,6 +274,108 @@ class StatisticsTab(ctk.CTkFrame):
             messagebox.showerror("Lỗi", f"❌ Lỗi tải dữ liệu: {str(e)}")
             logger.error(f"Error refreshing data: {e}")
     
+    def _show_delete_menu(self):
+        """Hiển thị menu xóa dữ liệu"""
+        # Tạo cửa sổ xác nhận
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("🗑️ Xóa Dữ Liệu Lịch Sử")
+        dialog.geometry("400x300")
+        dialog.resizable(False, False)
+        
+        # Tiêu đề
+        title = ctk.CTkLabel(
+            dialog,
+            text="Chọn dữ liệu cần xóa",
+            font=("Arial", 13, "bold")
+        )
+        title.pack(padx=20, pady=15)
+        
+        # Frame chứa các nút
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        # Nút xóa hôm nay
+        btn_today = ctk.CTkButton(
+            button_frame,
+            text="📅 Xóa Dữ Liệu Hôm Nay",
+            command=lambda: self._delete_and_confirm(1, "hôm nay"),
+            height=40,
+            font=("Arial", 11),
+            fg_color=("orange", "#8B4500")
+        )
+        btn_today.pack(fill="x", pady=5)
+        
+        # Nút xóa 7 ngày
+        btn_week = ctk.CTkButton(
+            button_frame,
+            text="📆 Xóa Dữ Liệu 7 Ngày",
+            command=lambda: self._delete_and_confirm(7, "7 ngày"),
+            height=40,
+            font=("Arial", 11),
+            fg_color=("orange", "#8B4500")
+        )
+        btn_week.pack(fill="x", pady=5)
+        
+        # Nút xóa 30 ngày
+        btn_month = ctk.CTkButton(
+            button_frame,
+            text="📊 Xóa Dữ Liệu 30 Ngày",
+            command=lambda: self._delete_and_confirm(30, "30 ngày"),
+            height=40,
+            font=("Arial", 11),
+            fg_color=("orange", "#8B4500")
+        )
+        btn_month.pack(fill="x", pady=5)
+        
+        # Nút xóa tất cả
+        btn_all = ctk.CTkButton(
+            button_frame,
+            text="🗑️ Xóa TẤT CẢ Dữ Liệu",
+            command=lambda: self._delete_and_confirm(None, "tất cả"),
+            height=40,
+            font=("Arial", 11, "bold"),
+            fg_color=("red", "#8B0000")
+        )
+        btn_all.pack(fill="x", pady=5)
+        
+        # Nút đóng
+        btn_close = ctk.CTkButton(
+            dialog,
+            text="Hủy",
+            command=dialog.destroy,
+            height=35,
+            font=("Arial", 10)
+        )
+        btn_close.pack(padx=20, pady=10, fill="x")
+    
+    def _delete_and_confirm(self, days, description):
+        """Xác nhận và xóa dữ liệu"""
+        # Hỏi lại xác nhận
+        confirm = messagebox.askyesno(
+            "⚠️ Xác Nhận Xóa",
+            f"Bạn có chắc muốn xóa dữ liệu {description}?\n\n"
+            f"⚠️ Hành động này không thể hoàn tác!"
+        )
+        
+        if confirm:
+            try:
+                # Xóa dữ liệu
+                if days is None:
+                    success = self.db_manager.clear_all_detection_history()
+                else:
+                    success = self.db_manager.delete_detection_history(days=days)
+                
+                if success:
+                    messagebox.showinfo("✅ Thành Công", f"Đã xóa dữ liệu {description} thành công!")
+                    self._refresh_data()
+                    logger.info(f"Deleted detection history for {description}")
+                else:
+                    messagebox.showerror("❌ Lỗi", "Không thể xóa dữ liệu. Vui lòng thử lại.")
+            
+            except Exception as e:
+                messagebox.showerror("❌ Lỗi", f"Lỗi khi xóa dữ liệu: {str(e)}")
+                logger.error(f"Error deleting detection history: {e}")
+    
     def _format_detection_type(self, detection_type: str) -> str:
         """Format loại phát hiện để hiển thị"""
         mapping = {
@@ -268,3 +384,4 @@ class StatisticsTab(ctk.CTkFrame):
             'suspicious': '⚠️ Tình Nghi'
         }
         return mapping.get(detection_type, detection_type)
+

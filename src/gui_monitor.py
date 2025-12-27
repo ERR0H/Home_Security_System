@@ -10,7 +10,7 @@ import numpy as np
 import threading
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,8 @@ class MonitorTab(ctk.CTkFrame):
         self.stop_monitor_event = threading.Event()
         
         # Cache ảnh để hiển thị
+        # Dictionary để track lần cuối ghi nhận: {(camera_id, user_name): datetime}
+        self.last_detection_time = {}
         self.current_frame = None
         self.display_image = None
         
@@ -218,13 +220,11 @@ class MonitorTab(ctk.CTkFrame):
         for camera in cameras:
             camera_id = camera['id']
             name = camera['name']
-            status = camera['status']
             
             # Nút camera
-            btn_text = f"{name}\n({status})"
             btn = ctk.CTkButton(
                 self.camera_list_frame,
-                text=btn_text,
+                text=name,
                 command=lambda cid=camera_id, cname=name: self._select_camera(cid, cname),
                 height=50,
                 font=("Arial", 10),
@@ -268,6 +268,9 @@ class MonitorTab(ctk.CTkFrame):
         
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        
+        # Reload danh sách camera để cập nhật status
+        self.after(500, self._load_camera_list)
     """
     def _start_monitoring(self):
         
@@ -351,21 +354,34 @@ class MonitorTab(ctk.CTkFrame):
     
     def _display_frame(self, frame: np.ndarray):
         """
-        Hiển thị frame lên label.
+        Hiển thị frame lên label với khung cố định (700x500).
         Chuyển từ OpenCV (BGR) sang PIL (RGB) để hiển thị trên tkinter
         """
         try:
-            # Resize frame để vừa với label
-            h, w = frame.shape[:2]
-            max_width = 700
-            max_height = 500
+            # Khung cố định
+            FIXED_WIDTH = 700
+            FIXED_HEIGHT = 500
             
-            if w > max_width or h > max_height:
-                scale = min(max_width / w, max_height / h)
-                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+            h, w = frame.shape[:2]
+            
+            # Resize frame để vừa với khung cố định (giữ tỷ lệ)
+            scale = min(FIXED_WIDTH / w, FIXED_HEIGHT / h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            frame_resized = cv2.resize(frame, (new_w, new_h))
+            
+            # Tạo canvas cố định và đặt frame vào giữa
+            canvas = np.ones((FIXED_HEIGHT, FIXED_WIDTH, 3), dtype=np.uint8) * 30
+            
+            # Tính vị trí để đặt frame vào giữa
+            y_offset = (FIXED_HEIGHT - new_h) // 2
+            x_offset = (FIXED_WIDTH - new_w) // 2
+            
+            canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = frame_resized
             
             # Chuyển BGR sang RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
             
             # Chuyển sang PIL Image
             pil_image = Image.fromarray(frame_rgb)
@@ -426,20 +442,55 @@ class MonitorTab(ctk.CTkFrame):
                     detection_type = 'unknown'
                     message = f"👤 Phát hiện người không xác định: {user_name}"
             
-            # Ghi vào database
-            self.db_manager.log_detection(
-                camera_id=camera_id,
-                detection_type=detection_type,
-                user_id=user_id,
-                user_name=user_name
-            )
+            # Kiểm tra xem có nên ghi nhận lại sau 60 giây không
+            # Dùng in-memory tracking thay vì query database
+            should_log = self._should_log_detection_memory(camera_id, user_name, threshold_seconds=60)
             
-            # Chỉ hiển thị cảnh báo cho người lạ và tình nghi
-            if detection_type != 'known':
-                self._add_alert(f"[{timestamp}] {message}")
-            
+            if should_log:
+                # Ghi vào database
+                self.db_manager.log_detection(
+                    camera_id=camera_id,
+                    detection_type=detection_type,
+                    user_id=user_id,
+                    user_name=user_name
+                )
+                
+                # Update lần ghi nhận cuối cùng trong memory
+                detection_key = (camera_id, user_name)
+                self.last_detection_time[detection_key] = datetime.now()
+                
+                # Chỉ hiển thị cảnh báo cho người lạ và tình nghi
+                if detection_type != 'known':
+                    self._add_alert(f"[{timestamp}] {message}")
+        
         except Exception as e:
             logger.error(f"Error in safe_log_detection: {e}")
+    
+    def _should_log_detection_memory(self, camera_id, user_name, threshold_seconds=60) -> bool:
+        """
+        Kiểm tra xem có nên ghi nhận sự kiện phát hiện.
+        Sử dụng in-memory tracking để tránh ghi quá nhiều.
+        
+        Args:
+            camera_id: ID camera
+            user_name: Tên người dùng
+            threshold_seconds: Khoảng thời gian tối thiểu giữa các lần ghi nhận
+        
+        Returns:
+            True nếu nên ghi nhận, False nếu đã ghi nhận gần đây
+        """
+        detection_key = (camera_id, user_name)
+        current_time = datetime.now()
+        
+        # Nếu chưa bao giờ ghi nhận người này trên camera này
+        if detection_key not in self.last_detection_time:
+            return True
+        
+        last_time = self.last_detection_time[detection_key]
+        time_diff = (current_time - last_time).total_seconds()
+        
+        # Chỉ ghi nhận nếu cách lần trước >= 60 giây
+        return time_diff >= threshold_seconds
 
     def _stop_monitoring(self):
         """Dừng giám sát camera"""
@@ -458,22 +509,12 @@ class MonitorTab(ctk.CTkFrame):
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self._add_alert("⏹️ Đã dừng giám sát và ngắt kết nối")
-    """
-    def _stop_monitoring(self):
         
-        self.stop_monitor_event.set()
-        self.is_monitoring = False
+        # Reset tracking detections khi dừng
+        self.last_detection_time.clear()
         
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=2)
-        
-        # Cập nhật UI
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
-        
-        self._add_alert("⏹️ Đã dừng giám sát")
-        logger.info("Stopped monitoring")
-    """
+        # Reload danh sách camera để cập nhật status
+        self.after(500, self._load_camera_list)
     
     def _add_alert(self, message: str):
         """Thêm tin nhắn cảnh báo"""
